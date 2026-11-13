@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import unicodedata
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +110,15 @@ class Dataset:
         self._login_by_name = {
             _norm_name(self.names[e]): login for e, login in self.logins.items() if login and e in self.names
         }
+        # Without a login, spellings of one name ('Zoe Smith', 'Zoë Smith (ACME)') count as one person, shown
+        # under the most used spelling minus any "(Company)" suffix.
+        used = Counter(c.email.lower() for c in self.commits)
+        spellings: dict[str, Counter] = defaultdict(Counter)
+        for email, name in self.names.items():
+            spellings[_norm_name(name)][_display_name(name)] += used[email]
+        self._name_by_norm = {
+            norm: min(c, key=lambda n: (-c[n], n)) for norm, c in spellings.items()
+        }
         self.prs_by_number = {p["number"]: p for p in self.prs}
 
     # --- identities -----------------------------------------------------------------------------
@@ -128,8 +138,13 @@ class Dataset:
         if email in self.cfg.join:
             return self.canon(email)
         name = self.names.get(email)
-        base = self.logins.get(email) or (name and self._login_by_name.get(_norm_name(name))) or name or email
-        return self.canon(base)
+        if not name:
+            return self.canon(self.logins.get(email) or email)
+        if login := self.logins.get(email) or self._login_by_name.get(_norm_name(name)):
+            return self.canon(login)
+        if name.lower() in self.cfg.join:  # a [join] written for this exact spelling still applies
+            return self.canon(name)
+        return self.canon(self._name_by_norm[_norm_name(name)])
 
     def email_is_bot(self, email: str) -> bool:
         email = email.lower()
@@ -184,9 +199,15 @@ class Dataset:
 
 def _norm_name(name: str) -> str:
     """'Zoë Smith (ACME)', 'Zoe Smith' and 'ZoeSmith' compare equal."""
-    name = re.sub(r"\(.*?\)", "", name)
-    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]", "", name.lower())
+    stripped = re.sub(r"\(.*?\)", "", name)
+    ascii_only = unicodedata.normalize("NFKD", stripped).encode("ascii", "ignore").decode()
+    # names with no latin letters (e.g. '张伟') would all normalise to ''; keep them apart
+    return re.sub(r"[^a-z0-9]", "", ascii_only.lower()) or re.sub(r"\s+", "", stripped.lower()) or name
+
+
+def _display_name(name: str) -> str:
+    """'Zoë Smith (ACME)' -> 'Zoë Smith'."""
+    return re.sub(r"\s+", " ", re.sub(r"\(.*?\)", "", name)).strip() or name
 
 
 def _resolve_identities(root: Path, ref: str, gh: GitHub | None, cache: Cache, progress: Progress) -> tuple[dict, dict]:

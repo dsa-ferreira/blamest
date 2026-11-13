@@ -243,6 +243,35 @@ def test_name_fallback_ignores_accents_spacing_and_company_suffix(ds):
     assert ds.who("max@home.example") == "max-mustermann"
 
 
+def test_spellings_of_one_name_without_login_count_as_one_person(repo):
+    """Git-only mode (no gh, empty cache): no logins at all, so people are grouped by git name."""
+    for who, n in (("zoe-work", 1), ("zoe-home", 2), ("wei-a", 1), ("wei-b", 1)):
+        for i in range(n):
+            repo.write(f"{who}.txt", [str(i)])
+            repo.commit(who, T0 + i)
+    ds = make_dataset(repo, github=False)
+    ds.names.update({"zoe-work@example.com": "Zoë Smith (ACME)", "zoe-home@example.com": "Zoë  Smith",
+                     "wei-a@example.com": "张伟", "wei-b@example.com": "王芳"})
+    ds.logins = {}
+    ds.__post_init__()
+    # shown under the most used spelling, company suffix and extra spaces dropped
+    assert ds.who("zoe-work@example.com") == ds.who("zoe-home@example.com") == "Zoë Smith"
+    assert set(ds.identities_of("Zoë Smith")) == {"Zoë  Smith", "Zoë Smith (ACME)", "zoe-home@example.com",
+                                                  "zoe-work@example.com"}
+    # names without latin letters don't all collapse into one person
+    assert ds.who("wei-a@example.com") == "张伟" and ds.who("wei-b@example.com") == "王芳"
+    assert compute(ds, None, None).values["Zoë Smith"]["commits"] == 3
+
+
+def test_join_on_an_exact_git_name_still_applies(repo):
+    repo.write("a.txt", ["x"])
+    repo.commit("zoe", T0)
+    ds = make_dataset(repo, cfg=Config(join={"zoë smith (acme)": "zoe-smith"}), github=False)
+    ds.names["zoe@example.com"], ds.logins = "Zoë Smith (ACME)", {}
+    ds.__post_init__()
+    assert ds.who("zoe@example.com") == "zoe-smith"
+
+
 @pytest.mark.parametrize("path", [
     "billing/src/Api/obj/project.assets.json", "billing/src/Api/bin/Debug/net10.0/App.deps.json",
     "user/src/Persistence/Migrations/20260101_Init.Designer.cs", "user/src/Persistence/Migrations/AppDbContextModelSnapshot.cs",
