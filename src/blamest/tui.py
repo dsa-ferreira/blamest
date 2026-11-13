@@ -19,7 +19,7 @@ from textual.widgets.option_list import Option
 
 from .dataset import Dataset
 from .dates import describe_range, parse_date
-from .metrics import CATEGORIES, Report, compute, fmt_duration, landed_in_range
+from .metrics import Report, compute, fmt_duration, landed_in_range
 
 SPARK = "▁▂▃▄▅▆▇█"
 
@@ -190,12 +190,16 @@ class OverviewPane(Vertical):
         self._build()
 
     def _build(self) -> None:
-        report, key = self.report, self.sort_key
+        report = self.report
+        columns = [k for k in OVERVIEW_COLUMNS if report.has_metric(k)]
+        if self.sort_key != "author" and self.sort_key not in columns:
+            self.sort_key, self.sort_desc = "commits", True
+        key = self.sort_key
         table = self.query_one(DataTable)
         table.clear(columns=True)
         arrow = " ▼" if self.sort_desc else " ▲"
         table.add_column("Person" + (arrow if key == "author" else ""), key="author")
-        for k in OVERVIEW_COLUMNS:
+        for k in columns:
             table.add_column(report.metric(k).title + (arrow if k == key else ""), key=k)
 
         if key == "author":
@@ -209,7 +213,7 @@ class OverviewPane(Vertical):
             v = report.values[author]
             table.add_row(
                 author,
-                *[Text(report.metric(k).fmt(v[k]) if k in v else "—", justify="right") for k in OVERVIEW_COLUMNS],
+                *[Text(report.metric(k).fmt(v[k]) if k in v else "—", justify="right") for k in columns],
                 key=author,
             )
 
@@ -433,9 +437,9 @@ class BlamestApp(App):
         Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(self, ds: Dataset, since: datetime | None, until: datetime | None):
+    def __init__(self, ds: Dataset, since: datetime | None, until: datetime | None, warning: str | None = None):
         super().__init__()
-        self.ds, self.since, self.until = ds, since, until
+        self.ds, self.since, self.until, self.warning = ds, since, until, warning
         self.report = compute(ds, since, until)
 
     def compose(self) -> ComposeResult:
@@ -446,7 +450,7 @@ class BlamestApp(App):
                 yield AwardsPane()
             with TabPane("Overview", id="overview"):
                 yield OverviewPane()
-            for cat in CATEGORIES:
+            for cat in self.report.categories:
                 with TabPane(cat, id=cat.lower().replace(" ", "-")):
                     yield CategoryPane(cat)
             with TabPane("Activity", id="activity"):
@@ -456,6 +460,8 @@ class BlamestApp(App):
     def on_mount(self) -> None:
         self.refresh_panes()
         self._focus_active_tab()
+        if self.warning:
+            self.notify(self.warning, title="Git-only mode", severity="warning", timeout=20)
 
     def _on_dashboard(self) -> bool:
         """False while a profile, dialog or the glossary is open on top."""
@@ -482,6 +488,8 @@ class BlamestApp(App):
 
     def refresh_panes(self) -> None:
         self.sub_title = f"{self.ds.repo.slug} · {describe_range(self.since, self.until)} · churn window {self.report.churn_days}d"
+        if not self.ds.github:
+            self.sub_title += " · git only (no PR, review or comment metrics)"
         for pane in self.query("AwardsPane, OverviewPane, CategoryPane, ActivityPane"):
             pane.update_report(self.report)
 
@@ -571,7 +579,7 @@ class GlossaryScreen(ModalScreen):
                  "and `.mailmap`; an email GitHub can't match takes the login of another email with the same git "
                  "name. Anything still split can be joined with `j` (saved in the `[join]` table of "
                  "`.blamest.toml`).\n"]
-        for cat in CATEGORIES:
+        for cat in self.report.categories:
             parts.append(f"## {cat}\n")
             for m in self.report.metrics:
                 if m.category == cat:

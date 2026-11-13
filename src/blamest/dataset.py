@@ -102,6 +102,7 @@ class Dataset:
     logins: dict[str, str | None]      # email -> GitHub login
     churn: dict[str, list[ChurnLine]]  # commit sha -> lines it rewrote
     cache: Cache | None = None
+    github: bool = True                # False when gh couldn't be used: no PRs, reviews or comments
 
     def __post_init__(self) -> None:
         # Emails GitHub can't link to an account inherit the login of another email with the same git name.
@@ -188,8 +189,9 @@ def _norm_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
-def _resolve_identities(root: Path, ref: str, gh: GitHub, cache: Cache, progress: Progress) -> tuple[dict, dict]:
-    """email -> name, and email -> GitHub login (resolved via the API, cached)."""
+def _resolve_identities(root: Path, ref: str, gh: GitHub | None, cache: Cache, progress: Progress) -> tuple[dict, dict]:
+    """email -> name, and email -> GitHub login (resolved via the API and cached; without gh only the
+    cache and noreply emails are used)."""
     out = git(root, "log", ref, "--format=%H%x1f%aN%x1f%aE")
     names: dict[str, str] = {}
     sample_sha: dict[str, str] = {}
@@ -207,7 +209,7 @@ def _resolve_identities(root: Path, ref: str, gh: GitHub, cache: Cache, progress
         if login := login_from_noreply(email):
             found[email] = login
             unknown.remove(email)
-    if unknown:
+    if unknown and gh:
         progress("Matching commit emails to GitHub users", 0, len(unknown))
         by_sha = gh.logins_for_commits(sample_sha[e] for e in unknown)
         for email in unknown:
@@ -219,7 +221,9 @@ def _resolve_identities(root: Path, ref: str, gh: GitHub, cache: Cache, progress
     return names, logins
 
 
-def load(root: Path, repo: RepoInfo, cfg: Config, refresh: bool = False, progress: Progress = _noop) -> Dataset:
+def load(root: Path, repo: RepoInfo, cfg: Config, gh: GitHub | None, refresh: bool = False,
+         progress: Progress = _noop) -> Dataset:
+    """Read git history and, when `gh` is given, PRs and logins from GitHub."""
     cache = Cache(cache_path(repo))
     if refresh or cache.meta("schema") != SCHEMA_VERSION:
         cache.reset("prs", "identity", "meta", "churn", "churn_done")
@@ -234,8 +238,12 @@ def load(root: Path, repo: RepoInfo, cfg: Config, refresh: bool = False, progres
     landed = expand_unattributed_merges(root, read_commits(root, ref, landed=True), commits)
     progress("Reading git history", len(commits), len(commits))
 
-    gh = GitHub(repo)
     names, logins = _resolve_identities(root, ref, gh, cache, progress)
+    if gh is None:
+        return Dataset(
+            root=root, repo=repo, cfg=cfg, commits=commits, landed=landed, prs=[],
+            names=names, logins=logins, churn=cache.churn(), cache=cache, github=False,
+        )
 
     last_sync = cache.meta("pr_sync")
     stage = "Fetching pull requests" + (" (changes since last run)" if last_sync else "")

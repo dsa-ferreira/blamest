@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config
+from .github import RepoInfo
 
 _SEP = "\x1f"
 _REC = "\x1e"
@@ -18,6 +19,8 @@ _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
 _BRACE_RENAME = re.compile(r"\{([^{}]*) => ([^{}]*)\}")
 _MERGE_PR = re.compile(r"^Merge pull request #(\d+)")
 _SQUASH_PR = re.compile(r"\(#(\d+)\)\s*$")
+# [scheme://][user[:pass]@]host[:port](:|/)path[.git]
+_REMOTE = re.compile(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)(?:\.git)?/?$")
 
 
 class GitError(RuntimeError):
@@ -74,6 +77,44 @@ class ChurnLine:
 
 def repo_root(path: Path) -> Path:
     return Path(git(path, "rev-parse", "--show-toplevel").strip())
+
+
+def parse_remote(url: str) -> tuple[str, str, str] | None:
+    """(host, owner, name) from a GitHub remote URL (https, ssh or scp-style), or None if it isn't one."""
+    m = _REMOTE.match(url.strip())
+    if not m or m.group(1).startswith("."):
+        return None
+    parts = m.group(2).strip("/").split("/")
+    return (m.group(1).lower(), parts[-2], parts[-1]) if len(parts) >= 2 else None
+
+
+def repo_from_git(root: Path) -> RepoInfo:
+    """What the repo is (host, owner, name, default branch) from git alone, for when gh can't tell us."""
+    remotes = git(root, "remote").split()
+    remote = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
+    host, owner, name = "local", "local", root.name
+    if remote and (parsed := parse_remote(git(root, "remote", "get-url", remote))):
+        host, owner, name = parsed
+    return RepoInfo(host, owner, name, _default_branch(root, remote))
+
+
+def _default_branch(root: Path, remote: str | None) -> str:
+    if remote:
+        try:  # set by `git clone`; points at the remote's default branch
+            return git(root, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD").strip().split("/", 1)[1]
+        except (GitError, IndexError):
+            pass
+    for branch in ("main", "master"):
+        for ref in ([f"refs/remotes/{remote}/{branch}"] if remote else []) + [f"refs/heads/{branch}"]:
+            try:
+                git(root, "rev-parse", "--verify", "--quiet", ref)
+                return branch
+            except GitError:
+                continue
+    try:
+        return git(root, "symbolic-ref", "--quiet", "--short", "HEAD").strip()
+    except GitError:
+        return "main"
 
 
 def resolve_branch(repo: Path, branch: str) -> str:

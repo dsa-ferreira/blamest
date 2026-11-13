@@ -56,7 +56,7 @@ def repo(tmp_path: Path) -> Repo:
     return Repo(tmp_path)
 
 
-def make_dataset(repo: Repo, prs: list[dict] | None = None, cfg: Config | None = None) -> Dataset:
+def make_dataset(repo: Repo, prs: list[dict] | None = None, cfg: Config | None = None, github: bool = True) -> Dataset:
     commits = read_commits(repo.path, "refs/heads/main")
     landed = expand_unattributed_merges(repo.path, read_commits(repo.path, "refs/heads/main", landed=True), commits)
     return Dataset(
@@ -69,4 +69,5 @@ def make_dataset(repo: Repo, prs: list[dict] | None = None, cfg: Config | None =
         names={c.email: c.name for c in commits},
         logins={c.email: c.email.split("@")[0] for c in commits},
         churn={},
+        github=github,
     )

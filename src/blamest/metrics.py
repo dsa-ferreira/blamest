@@ -55,6 +55,7 @@ class Metric:
 
 
 CATEGORIES = ["Commits", "Pull requests", "Reviews", "Comments", "Churn"]
+GITHUB_CATEGORIES = {"Pull requests", "Reviews", "Comments"}  # need PR data from gh; the rest is git only
 
 _REVIEWED = (
     "Only PRs that got at least one review from someone else before merging count; PRs merged without "
@@ -62,7 +63,12 @@ _REVIEWED = (
 )
 
 
-def build_metrics(churn_days: int) -> list[Metric]:
+def build_metrics(churn_days: int, github: bool = True) -> list[Metric]:
+    metrics = _all_metrics(churn_days)
+    return metrics if github else [m for m in metrics if m.category not in GITHUB_CATEGORIES]
+
+
+def _all_metrics(churn_days: int) -> list[Metric]:
     M, A = Metric, Award
     return [
         # --- Commits ---------------------------------------------------------------------------
@@ -200,6 +206,13 @@ class Report:
     values: dict[str, dict[str, float]]
     extras: dict[str, dict] = field(default_factory=dict)
     bucket_days: float = 7.0
+
+    @property
+    def categories(self) -> list[str]:
+        return [c for c in CATEGORIES if any(m.category == c for m in self.metrics)]
+
+    def has_metric(self, key: str) -> bool:
+        return any(m.key == key for m in self.metrics)
 
     @property
     def authors(self) -> list[str]:
@@ -404,6 +417,6 @@ def compute(ds: Dataset, since: datetime | None, until: datetime | None, churn_d
             values[a] = v
 
     return Report(
-        since=since, until=until, churn_days=churn_days, metrics=build_metrics(churn_days),
+        since=since, until=until, churn_days=churn_days, metrics=build_metrics(churn_days, ds.github),
         values=values, extras={a: extras[a] for a in values}, bucket_days=bucket_days,
     )

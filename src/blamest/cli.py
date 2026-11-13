@@ -12,8 +12,8 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from . import dataset
 from .config import load_config
 from .dates import parse_date
-from .gitdata import GitError, repo_root
-from .github import GhError, detect_repo
+from .gitdata import GitError, repo_from_git, repo_root
+from .github import GhError, GitHub, RepoInfo, detect_repo, github_problem
 from .metrics import landed_in_range
 
 
@@ -30,6 +30,19 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _connect(root: Path) -> tuple[RepoInfo, GitHub | None, str | None]:
+    """The repo, a GitHub client when gh can be used for it, and otherwise a warning saying why not."""
+    repo = repo_from_git(root)
+    problem = github_problem(repo.host)
+    if problem is None:
+        try:
+            repo = detect_repo(root)  # gh knows the canonical owner/name and the real default branch
+            return repo, GitHub(repo), None
+        except GhError as e:
+            problem = f"gh couldn't look up this repository: {e}"
+    return repo, None, f"{problem}. Showing only the metrics that come from git (no PRs, reviews or comments)."
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _args(argv)
     console = Console(stderr=True)
@@ -40,7 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(root)
         if args.churn_days:
             cfg.churn_days = args.churn_days
-        repo = detect_repo(root)
+        repo, gh, warning = _connect(root)
+        if warning:
+            console.print(f"[yellow]warning:[/yellow] {warning}")
 
         with Progress(
             SpinnerColumn(), TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(),
@@ -53,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
                     tasks[stage] = progress.add_task(stage, total=total)
                 progress.update(tasks[stage], completed=done, total=total)
 
-            ds = dataset.load(root, repo, cfg, refresh=args.refresh, progress=report)
+            ds = dataset.load(root, repo, cfg, gh, refresh=args.refresh, progress=report)
             ds.ensure_churn(landed_in_range(ds, since, until), progress=report)
     except (GitError, GhError, ValueError) as e:
         console.print(f"[red]error:[/red] {e}")
@@ -63,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from .tui import BlamestApp  # imported late so `--help` stays fast
 
-    BlamestApp(ds, since, until).run()
+    BlamestApp(ds, since, until, warning).run()
     return 0
 
 

@@ -9,8 +9,10 @@ comments, code churn, plus a set of (completely serious) awards.
 uv tool install .          # from this directory; then `blamest` is on your PATH
 ```
 
-Requires `git` and an authenticated [`gh`](https://cli.github.com/) (github.com or GitHub Enterprise,
-whichever host the repo's remote points at).
+Requires `git`. PR, review and comment metrics also need [`gh`](https://cli.github.com/), logged in to
+the host the repo's remote points at (github.com or GitHub Enterprise). Without it, or when it isn't
+logged in to that host, blamest warns and shows only the metrics that come from git (commits, lines,
+activity and churn).
 
 ## Use
 

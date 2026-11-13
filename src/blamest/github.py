@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -42,6 +43,18 @@ def _gh(args: list[str], cwd: Path | None = None, stdin: str | None = None, retr
             raise GhError(f"gh {' '.join(args[:2])} failed: {proc.stderr.strip()}")
         time.sleep(2 * (attempt + 1))
     raise AssertionError("unreachable")
+
+
+def github_problem(host: str) -> str | None:
+    """Why GitHub data can't be fetched for `host` through gh, or None when it can."""
+    if host == "local":
+        return "this repository has no GitHub remote"
+    if shutil.which("gh") is None:
+        return "the GitHub CLI (gh) isn't installed (https://cli.github.com/)"
+    proc = subprocess.run(["gh", "auth", "status", "--hostname", host], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return f"gh isn't logged in to {host} (run `gh auth login --hostname {host}`)"
+    return None
 
 
 def detect_repo(path: Path) -> RepoInfo:
